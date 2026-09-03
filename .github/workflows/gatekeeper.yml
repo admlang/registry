@@ -1,0 +1,83 @@
+# The registry's only reviewer. Every pull request must add exactly one index
+# line; this workflow checks the line, the namespace ownership, the container
+# behind it and the version order, then merges. No human review.
+#
+# Runs on pull_request_target so it has a write token for the merge and so
+# forks can publish. It never checks out or executes anything from the pull
+# request: the added line is read through the API as data and the container
+# is fetched from the author's repository by tag.
+name: gatekeeper
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths: ["index/**"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: gatekeeper-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the base branch (never the pull request)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Install the ADM toolchain from a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ADM_DIST_REPO: ${{ vars.ADM_DIST_REPO || 'admlang/adm' }}
+          ADM_VERSION: ${{ vars.ADM_VERSION }}
+        run: |
+          set -euo pipefail
+          # The language package (bin/adm + lib/) published by tools/package.sh.
+          # `adm lib verify` needs neither clang nor LLVM, so the plain archive is enough.
+          if [ -n "$ADM_VERSION" ]; then
+            gh release download "v$ADM_VERSION" --repo "$ADM_DIST_REPO" --pattern 'adm-*-linux-amd64.tar.gz' --dir "$RUNNER_TEMP"
+          else
+            gh release download --repo "$ADM_DIST_REPO" --pattern 'adm-*-linux-amd64.tar.gz' --dir "$RUNNER_TEMP"
+          fi
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP"/adm-*-linux-amd64.tar.gz
+          echo "$RUNNER_TEMP"/adm-*-linux-amd64/bin >> "$GITHUB_PATH"
+          "$RUNNER_TEMP"/adm-*-linux-amd64/bin/adm version || true
+
+      - name: Validate the submission
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: python3 .github/gatekeeper.py
+
+      - name: Merge
+        env:
+          # REGISTRY_TOKEN (a fine-grained token with contents + pull requests
+          # write on this repository) replaces GITHUB_TOKEN where the
+          # organisation keeps workflow permissions read-only.
+          GH_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Rebase merge keeps the index append-only and linear. Another line
+          # may have landed in the same file meanwhile: update the branch and
+          # retry a few times instead of failing the submission.
+          for attempt in 1 2 3 4 5; do
+            if gh pr merge "$PR_NUMBER" --repo "$REPO" --rebase --delete-branch; then
+              exit 0
+            fi
+            gh api -X PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" -f update_method=rebase || true
+            sleep $((attempt * 10))
+          done
+          echo "could not merge after retries" >&2
+          exit 1
