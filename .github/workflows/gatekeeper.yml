@@ -61,23 +61,14 @@ jobs:
 
       - name: Merge
         env:
-          # REGISTRY_TOKEN (a fine-grained token with contents + pull requests
-          # write on this repository) replaces GITHUB_TOKEN where the
-          # organisation keeps workflow permissions read-only.
-          GH_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Rebase merge keeps the index append-only and linear. Another line
-          # may have landed in the same file meanwhile: update the branch and
-          # retry a few times instead of failing the submission.
-          for attempt in 1 2 3 4 5; do
-            if gh pr merge "$PR_NUMBER" --repo "$REPO" --rebase --delete-branch; then
-              exit 0
-            fi
-            gh api -X PUT "repos/$REPO/pulls/$PR_NUMBER/update-branch" -f update_method=rebase || true
-            sleep $((attempt * 10))
-          done
-          echo "could not merge after retries" >&2
-          exit 1
+          # This job is the required status check, so it cannot merge while it
+          # is still running: ask GitHub to merge the moment the check turns
+          # green (auto-merge, rebase so the index stays linear). A branch that
+          # fell behind because another line landed meanwhile is rebased by
+          # GitHub itself since the rule does not require it to be up to date.
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --rebase --delete-branch
