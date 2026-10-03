@@ -11,12 +11,10 @@ import re
 import subprocess
 import sys
 import tempfile
-import urllib.parse
-import urllib.request
 
 RESERVED = {"std", "builtin"}
 REQUIRED = ["namespace", "name", "version", "hash", "publisher", "repo", "description", "date", "adm", "yanked"]
-NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
+NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 NAMESPACE_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -119,40 +117,17 @@ def main():
         print(f"yank of {ns}:{name} {version} accepted")
         return
 
-    # 3. fetch the container: the release asset of tag <name>@<version> when the
-    #    line names one, else dist/<name>-<version>.admlib on tag v<version>
+    # 3. fetch dist/<name>-<version>.admlib from tag v<version> of the author's repository
     with tempfile.TemporaryDirectory() as tmp:
-        tag = line.get("tag") or f"v{version}"
-        if "tag" in line and tag != f"{name}@{version}":
-            die(f"tag {tag!r} must be {name}@{version}")
-        file = f"{name}-{version}.admlib"
-        if line.get("asset"):
-            if "tag" not in line:
-                die("a line with an asset names its tag")
-            want = f"https://github.com/{ns}/{repo_name}/releases/download/{urllib.parse.quote(tag, safe='@')}/{file}"
-            if line["asset"] != want:
-                die(f"asset {line['asset']} must be the release asset {want}")
-            try:
-                release = gh_api(f"repos/{ns}/{repo_name}/releases/tags/{urllib.parse.quote(tag, safe='')}")
-            except subprocess.CalledProcessError:
-                die(f"{ns}/{repo_name} has no release for tag {tag}")
-            if file not in [a["name"] for a in release.get("assets", [])]:
-                die(f"the release {tag} of {ns}/{repo_name} has no asset {file}")
-            container = os.path.join(tmp, file)
-            try:
-                with urllib.request.urlopen(line["asset"]) as resp, open(container, "wb") as out:
-                    out.write(resp.read())
-            except OSError as e:
-                die(f"cannot download {line['asset']}: {e}")
-        else:
-            url = f"https://github.com/{ns}/{repo_name}.git"
-            try:
-                sh("git", "clone", "--quiet", "--depth", "1", "--branch", tag, url, tmp)
-            except subprocess.CalledProcessError as e:
-                die(f"cannot fetch tag {tag} from {url}: {e.stderr.strip()}")
-            container = os.path.join(tmp, "dist", file)
-            if not os.path.isfile(container):
-                die(f"tag {tag} of {url} has no dist/{file}")
+        tag = f"v{version}"
+        url = f"https://github.com/{ns}/{repo_name}.git"
+        try:
+            sh("git", "clone", "--quiet", "--depth", "1", "--branch", tag, url, tmp)
+        except subprocess.CalledProcessError as e:
+            die(f"cannot fetch tag {tag} from {url}: {e.stderr.strip()}")
+        container = os.path.join(tmp, "dist", f"{name}-{version}.admlib")
+        if not os.path.isfile(container):
+            die(f"tag {tag} of {url} has no dist/{name}-{version}.admlib")
         digest = "sha256:" + hashlib.sha256(open(container, "rb").read()).hexdigest()
         if digest != line["hash"]:
             die(f"hash mismatch: the index says {line['hash']}, the container is {digest}")
