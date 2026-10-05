@@ -34,7 +34,9 @@ def gh_api(path, **params):
     args = ["gh", "api", path]
     for k, v in params.items():
         args += ["-f", f"{k}={v}"]
-    return json.loads(sh(*args))
+    out = sh(*args)
+    # Some endpoints answer 204 with no body (organisation membership).
+    return json.loads(out) if out.strip() else None
 
 
 def index_file(namespace):
