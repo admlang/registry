@@ -25,10 +25,13 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # The branch's tip, not base.sha: that is the commit the pull request
+      # was opened against, so a submission opened before a gatekeeper fix
+      # would keep running the old script.
       - name: Check out the base branch (never the pull request)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
 
       - name: Install the ADM toolchain from a release
